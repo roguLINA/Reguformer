@@ -167,6 +167,13 @@ def prepare_interval_model(
         filename="{epoch:02d}-{val_loss:.3f}",
         mode="min",
     )
+    early_stop_callback = pl.callbacks.early_stopping.EarlyStopping(
+        monitor='val_loss',
+        min_delta=0.00,
+        patience=10,
+        verbose=True,
+        mode="min",
+    )
 
     trainer = pl.Trainer(
         max_epochs=epochs,
@@ -174,7 +181,7 @@ def prepare_interval_model(
         benchmark=True,
         check_val_every_n_epoch=1,
         logger=logger,
-        callbacks=[checkpoint_callback],
+        callbacks=[checkpoint_callback, early_stop_callback],
     )
 
     trainer.fit(similarity_model)
@@ -252,6 +259,8 @@ def cv_model(
 
     group_kfold = GroupKFold(n_splits=n_splits)
     for train_index, test_index in group_kfold.split(X=df, groups=df[cv_column]):
+        if "dropdim" in model_type:
+            model.encoder.encoder.drop_dim.mode = "train"
         (
             train_slice_dataset,
             val_slice_dataset,
@@ -276,6 +285,9 @@ def cv_model(
         )
         if "performer" in model_type:
             similarity_model.model.encoder.multi_head_attention.device = "cpu"
+
+        if "dropdim" in model_type:
+            model.encoder.encoder.drop_dim.mode = "inference"
 
         if emb_distance:
             metrics_eucl_nn = calculate_distance(
@@ -396,6 +408,8 @@ def cv_model_hyperopt(
 
     group_kfold = GroupKFold(n_splits=n_splits)
     for train_index, test_index in group_kfold.split(X=df, groups=df[cv_column]):
+        if "dropdim" in model_type:
+            model.encoder.encoder.drop_dim.mode = "train"
         (
             train_slice_dataset,
             val_slice_dataset,
@@ -420,6 +434,9 @@ def cv_model_hyperopt(
         )
         if "performer" in model_type:
             similarity_model.model.encoder.multi_head_attention.device = "cpu"
+
+        if "dropdim" in model_type:
+            model.encoder.encoder.drop_dim.mode = "inference"
 
         if emb_distance:
             metrics_cosine_nn = calculate_distance(
@@ -471,16 +488,24 @@ def set_model_specific_params(
         if "transformer" in model_type:
             fc_hidden_size = specific_params["hidden_size"]
             specific_params.pop("hidden_size")
+        
         elif "performer" in model_type:
             fc_hidden_size = 16
-        elif "reguformer" in model_type:
+        elif "reguformer" in model_type or "dropdim" in model_type:
             fc_hidden_size = 64
+        if specific_params["label_smoothing"] > 0.0:
+            fc_output_size = 2
+            output_transform = "softmax"
+        else:
+            fc_output_size = 1
+            output_transform = "sigmoid"
 
         kwargs = {
             "fc_hidden_size": fc_hidden_size,
-            "fc_output_size": 1,
-            "output_transform": "sigmoid",
+            "fc_output_size": fc_output_size,
+            "output_transform": output_transform,
         }
+
     elif "triplet" in model_type:
         if "transformer" in model_type and "hidden_size" in specific_params:
             specific_params["embedding_size"] = specific_params["hidden_size"]
@@ -522,6 +547,7 @@ def optuna_hpo_and_best_model_evaluation(
                 elif suggest_type == "int":
                     ans[k] = trial.suggest_int(k, *suggest_param)
                 elif suggest_type == "float":
+                    # print(k, suggest_param)
                     ans[k] = trial.suggest_float(k, *suggest_param)
             return ans
 
@@ -553,6 +579,7 @@ def optuna_hpo_and_best_model_evaluation(
             data_kwargs["df"],
             slice_len=data_kwargs["slice_len"],
             well_column=data_kwargs["well_column"],
+            cv_column=data_kwargs["cv_column"],
             results_len_train=data_kwargs["results_len_train"],
             results_len_test=data_kwargs["results_len_test"],
             model_type=model_type,
@@ -602,6 +629,7 @@ def optuna_hpo_and_best_model_evaluation(
         data_kwargs["df"],
         slice_len=data_kwargs["slice_len"],
         well_column=data_kwargs["well_column"],
+        cv_column=data_kwargs["cv_column"],
         results_len_train=data_kwargs["results_len_train"],
         results_len_test=data_kwargs["results_len_test"],
         model_type=model_type,

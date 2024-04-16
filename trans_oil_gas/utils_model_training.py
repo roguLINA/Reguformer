@@ -25,10 +25,19 @@ def calculate_metrics(
     :param y_pred: array with predictions
     :return: tuple of accuracy, ROC AUC, PR AUC, Confusion matrix
     """
-    y_pred_cl = y_pred > 0.5
+    
+    if len(y_pred.shape) > 1:
+        y_pred_cl = np.argmax(y_pred, axis=1, keepdims=False)
+    else:
+        y_pred_cl = y_pred > 0.5
+
     acc = accuracy_score(target, y_pred_cl)
     conf_matrix = confusion_matrix(target, y_pred_cl)
-    pr_auc = average_precision_score(target, y_pred)
+    
+    try:
+        pr_auc = average_precision_score(target, y_pred)
+    except ValueError:
+        pr_auc = acc
 
     try:
         roc_auc = roc_auc_score(target, y_pred)
@@ -65,14 +74,22 @@ def test_nn_model(
     for anchor, positive, negative, well_anchor in test_loader:
         target_1_pred = model.forward([anchor, positive])
         target_0_pred = model.forward([anchor, negative])
+        if target_1_pred.shape[1] > 1:
+            predictions = torch.cat((target_1_pred, target_0_pred))
+            all_targets = torch.cat(
+                (torch.ones(anchor.shape[0]).long(), torch.zeros(anchor.shape[0]).long())
+            ).to(predictions.device)
+        
+        else:
+            predictions = torch.cat((target_1_pred.squeeze(), target_0_pred.squeeze()))
+            all_targets = torch.cat(
+                (torch.ones(anchor.shape[0]).float(), torch.zeros(anchor.shape[0]).float())
+            ).to(predictions.device)
 
-        predictions = torch.cat((target_1_pred.squeeze(), target_0_pred.squeeze()))
-        all_targets = torch.cat(
-            (torch.ones(anchor.shape[0]).float(), torch.zeros(anchor.shape[0]).float())
-        ).to(predictions.device)
+        test_predictions.extend(predictions.detach().cpu().numpy())
+        test_targets.extend(all_targets.detach().cpu().numpy())
 
-        test_predictions.extend(predictions.flatten().detach().cpu().numpy())
-        test_targets.extend(all_targets.flatten().detach().cpu().numpy())
+        
 
     test_predictions = np.array(test_predictions)
     test_targets = np.array(test_targets)

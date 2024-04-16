@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from trans_oil_gas import transformer, reguformer, performer
+from trans_oil_gas import dropdim, transformer, reguformer, performer
 
 from trans_oil_gas.utils_model_training import calculate_metrics
 
@@ -35,6 +35,7 @@ class SiameseArchitecture(nn.Module):
         super().__init__()
 
         self.encoder_type = encoder_type 
+        self.label_smoothing = specific_encoder_params["label_smoothing"] 
 
         if "transformer"in encoder_type:
             # Positional encoding for sequences
@@ -72,6 +73,28 @@ class SiameseArchitecture(nn.Module):
             in_emb = specific_encoder_params["d_model"] 
             out_emb = specific_encoder_params["d_model"]
 
+        if "dropdim" in encoder_type:
+            self.positional_encoding = None
+            self.encoder = dropdim.DropDimEncoder(
+                enc_in=specific_encoder_params["enc_in"],
+                d_model=specific_encoder_params["d_model"],
+                n_heads=specific_encoder_params["n_heads"],
+                e_layers=specific_encoder_params["e_layers"],
+                d_ff=specific_encoder_params["d_ff"],
+                dropout=specific_encoder_params["dropout"],
+                attn=specific_encoder_params["attn"],
+                activation=specific_encoder_params["activation"],
+                output_attention=specific_encoder_params["output_attention"],
+                distil=specific_encoder_params["distil"],
+                device=specific_encoder_params["device"],
+                sparsification_type=specific_encoder_params["sparsification_type"],
+                p=specific_encoder_params["p"],
+                alpha=specific_encoder_params["alpha"],
+                drop_dim_type=specific_encoder_params["drop_dim_type"],
+            )
+            in_emb = specific_encoder_params["d_model"] 
+            out_emb = specific_encoder_params["d_model"]
+
         elif "performer" in encoder_type:
             self.positional_encoding = None
             self.encoder = performer.PerformerEncoder(
@@ -101,7 +124,13 @@ class SiameseArchitecture(nn.Module):
             nn.Linear(in_features=fc_hidden_size, out_features=fc_output_size),
         )
         # activation to get probs
-        self.tfm = nn.Sigmoid() if output_transform == "sigmoid" else nn.Identity()
+        
+        if output_transform == "softmax":
+            self.tfm = nn.Softmax()
+        elif output_transform == "sigmoid":
+            self.tfm = nn.Sigmoid()
+        else:
+            self.tfm = nn.Identity()
 
     def encode(
         self, input_slice: torch.Tensor, mask: torch.Tensor = None
@@ -221,6 +250,28 @@ class TripletArchitecture(nn.Module):
             in_emb = specific_encoder_params["d_model"] 
             out_emb = specific_encoder_params["d_model"]
 
+        if "dropdim" in encoder_type:
+            self.positional_encoding = None
+            self.encoder = dropdim.DropDimEncoder(
+                enc_in=specific_encoder_params["enc_in"],
+                d_model=specific_encoder_params["d_model"],
+                n_heads=specific_encoder_params["n_heads"],
+                e_layers=specific_encoder_params["e_layers"],
+                d_ff=specific_encoder_params["d_ff"],
+                dropout=specific_encoder_params["dropout"],
+                attn=specific_encoder_params["attn"],
+                activation=specific_encoder_params["activation"],
+                output_attention=specific_encoder_params["output_attention"],
+                distil=specific_encoder_params["distil"],
+                device=specific_encoder_params["device"],
+                sparsification_type=specific_encoder_params["sparsification_type"],
+                p=specific_encoder_params["p"],
+                alpha=specific_encoder_params["alpha"],
+                drop_dim_type=specific_encoder_params["drop_dim_type"],
+            )
+            in_emb = specific_encoder_params["d_model"] 
+            out_emb = specific_encoder_params["d_model"]
+        
         elif "performer" in encoder_type:
             self.positional_encoding = None
             self.encoder = performer.PerformerEncoder(
@@ -329,7 +380,8 @@ class IntervalModel(pl.LightningModule):
         self.kwargs = kwargs
 
         if "siamese" in model_type:
-            self.loss_function = nn.BCELoss()
+            label_smoothing = self.model.label_smoothing
+            self.loss_function = nn.CrossEntropyLoss(label_smoothing=label_smoothing) if label_smoothing > 0.0 else nn.BCELoss() 
 
         elif "triplet" in model_type:
             self.loss_function = nn.TripletMarginLoss(margin=1.75)
@@ -353,20 +405,31 @@ class IntervalModel(pl.LightningModule):
         if "siamese" in self.model_type:
             target_1_pred = self.forward([anchor, positive])
             target_0_pred = self.forward([anchor, negative])
-
-            predictions = torch.cat((target_1_pred.squeeze(), target_0_pred.squeeze()))
-            all_targets = torch.cat(
-                (
-                    torch.ones(anchor.shape[0]).float(),
-                    torch.zeros(anchor.shape[0]).float(),
+            if self.model.label_smoothing > 0.0:
+                predictions = torch.cat((target_1_pred, target_0_pred)) 
+                all_targets = torch.cat(
+                    (
+                        torch.ones(anchor.shape[0]).long(),
+                        torch.zeros(anchor.shape[0]).long(),
+                    )
+                ).to(predictions.device)   
+                train_loss = self.loss_function(predictions, all_targets)
+                train_accuracy = (
+                    (all_targets == (predictions.argmax(dim=1))).float().mean()
                 )
-            ).to(predictions.device)
-
-            train_loss = self.loss_function(predictions, all_targets)
-            train_accuracy = (
-                (all_targets == (predictions.squeeze() > 0.5)).float().mean()
-            )
-
+            else:
+                predictions = torch.cat((target_1_pred.squeeze(), target_0_pred.squeeze()))
+                all_targets = torch.cat(
+                    (
+                        torch.ones(anchor.shape[0]).float(),
+                        torch.zeros(anchor.shape[0]).float(),
+                    )
+                ).to(predictions.device)
+                train_loss = self.loss_function(predictions, all_targets)
+                train_accuracy = (
+                    (all_targets == (predictions.squeeze() > 0.5)).float().mean()
+                )
+                
             self.log(
                 "train_loss", train_loss, on_step=False, on_epoch=True, prog_bar=True
             )
@@ -400,16 +463,27 @@ class IntervalModel(pl.LightningModule):
             target_1_pred = self.forward([anchor, positive])
             target_0_pred = self.forward([anchor, negative])
 
-            predictions = torch.cat((target_1_pred.squeeze(), target_0_pred.squeeze()))
-            all_targets = torch.cat(
-                (
-                    torch.ones(anchor.shape[0]).float(),
-                    torch.zeros(anchor.shape[0]).float(),
-                )
-            ).to(predictions.device)
-
-            val_loss = self.loss_function(predictions, all_targets)
-            val_accuracy = (all_targets == (predictions.squeeze() > 0.5)).float().mean()
+            if self.model.label_smoothing > 0.0:
+                predictions = torch.cat((target_1_pred, target_0_pred)) 
+                all_targets = torch.cat(
+                    (
+                        torch.ones(anchor.shape[0]).long(),
+                        torch.zeros(anchor.shape[0]).long(),
+                    )
+                ).to(predictions.device)   
+                val_loss = self.loss_function(predictions, all_targets)
+                val_accuracy = (all_targets == (predictions.argmax(dim=1))).float().mean()
+            else:
+                predictions = torch.cat((target_1_pred.squeeze(), target_0_pred.squeeze()))
+                all_targets = torch.cat(
+                    (
+                        torch.ones(anchor.shape[0]).float(),
+                        torch.zeros(anchor.shape[0]).float(),
+                    )
+                ).to(predictions.device)
+                
+                val_loss = self.loss_function(predictions, all_targets)
+                val_accuracy = (all_targets == (predictions.squeeze() > 0.5)).float().mean()
 
             self.log("val_loss", val_loss, prog_bar=True)
             self.log("val_acc", val_accuracy, prog_bar=True)

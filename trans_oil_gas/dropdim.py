@@ -6,6 +6,9 @@ import numpy as np
 
 import math
 
+from copy import deepcopy
+from scipy.stats import bernoulli
+
 
 class TriangularCausalMask():
     def __init__(self, B, L, device="cpu"):
@@ -30,7 +33,7 @@ class ProbMask():
     @property
     def mask(self):
         return self._mask
-
+    
 
 class ConvLayer(nn.Module):
     def __init__(self, c_in):
@@ -78,11 +81,70 @@ class EncoderLayer(nn.Module):
         y = self.dropout(self.conv2(y).transpose(-1, 1))
 
         return self.norm2(x + y), attn
+    
+# class DropDim(nn.Module):
+#     def __init__(self, p, mode="train"):
+#         super(DropDim, self).__init__()
+#         self.p = p
+#         self.mode = mode
 
+#     def forward(self, h):
+#         # print(self.mode)
+#         if self.mode == "inference":
+#             return h
+#         B, T, D = h.shape
+#         print('!', end='')
+#         new_h = torch.tensor([], device=h.device)
+#         for i in range(B):
+#             el = deepcopy(h[i, :, :].detach())
+#             ksi = bernoulli.rvs(p=0.3, size=D)
+#             el[:, ksi == 0] = 0
+#             new_h = torch.cat([new_h, el[None, :, :]])
+#         return new_h
+    
+
+class DropDim(nn.Module):
+    def __init__(self, p, type, mode="train", alpha=0):
+        super(DropDim, self).__init__()
+        self.p = p
+        self.mode = mode
+        self.type = type
+        if self.type == "random":
+            self.alpha = None
+        else:
+            self.alpha = alpha
+
+    def forward(self, h):
+        # print(self.mode)
+        if self.mode == "inference":
+            return h
+        
+        B, T, D = h.shape
+        # print('D', D)
+        new_h = torch.tensor([], device=h.device)
+        for i in range(B):
+            el = deepcopy(h[i, :, :].detach())
+
+            if self.type == "random":
+                ksi = bernoulli.rvs(p=0.3, size=D)
+                el[:, ksi == 0] = 0
+                new_h = torch.cat([new_h, el[None, :, :]])
+            elif self.type == "span":
+                l = torch.round(self.alpha * torch.rand(1))[0].long().item() # (r1 - r2) * torch.rand(a, b) + r2, a,b -- dimensions, r1, r2 -- range for distribution
+                s = np.random.choice(np.arange(D - l))
+                el[:, s:s+l-1] = 0
+                new_h = torch.cat([new_h, el[None, :, :]])
+        return new_h
+        
 
 class Encoder(nn.Module):
-    def __init__(self, attn_layers, conv_layers=None, norm_layer=None):
+    def __init__(self, attn_layers, conv_layers=None, norm_layer=None, p=None, alpha=0, drop_dim_type="random"):
         super(Encoder, self).__init__()
+        self.p = p
+        self.alpha = alpha
+        self.drop_dim_type = drop_dim_type
+        if p is not None: 
+            self.drop_dim = DropDim(p=self.p, type=self.drop_dim_type, alpha=self.alpha)
         self.attn_layers = nn.ModuleList(attn_layers)
         self.conv_layers = (
             nn.ModuleList(conv_layers) if conv_layers is not None else None
@@ -96,13 +158,20 @@ class Encoder(nn.Module):
             for attn_layer, conv_layer in zip(self.attn_layers, self.conv_layers):
                 x, attn = attn_layer(x, attn_mask=attn_mask)
                 x = conv_layer(x)
+                if self.p is not None: 
+                    x = self.drop_dim(x)
+
                 attns.append(attn)
             x, attn = self.attn_layers[-1](x, attn_mask=attn_mask)
+            if self.p is not None: 
+                x = self.drop_dim(x)
             attns.append(attn)
         else:
             for attn_layer in self.attn_layers:
                 x, attn = attn_layer(x, attn_mask=attn_mask)
                 attns.append(attn)
+                if self.p is not None: 
+                    x = self.drop_dim(x)
 
         if self.norm is not None:
             x = self.norm(x)
@@ -412,8 +481,8 @@ class DataEmbedding(nn.Module):
         return self.dropout(x)
 
 
-class ReguformerEncoder(nn.Module):
-    """Class implements encoding part of Reguformer.
+class DropDimEncoder(nn.Module):
+    """Class implements encoding part of DropDim.
 
     :param enc_in: Size of input embedding
     :param factor: Probsparse attn factor (defaults to 5)
@@ -431,6 +500,7 @@ class ReguformerEncoder(nn.Module):
     def __init__(
         self,
         enc_in,
+        p=None, alpha=0, drop_dim_type="random",
         factor=5,
         d_model=512,
         n_heads=8,
@@ -444,7 +514,7 @@ class ReguformerEncoder(nn.Module):
         device=torch.device("cuda:0"),
         sparsification_type=None,
     ):
-        super(ReguformerEncoder, self).__init__()
+        super(DropDimEncoder, self).__init__()
 
         self.attn = attn
         self.output_attention = output_attention
@@ -453,9 +523,10 @@ class ReguformerEncoder(nn.Module):
         self.enc_embedding = DataEmbedding(enc_in, d_model, dropout)
         # Attention
         Attn = ProbAttention if attn == "prob" else FullAttention
+
         # Encoder
         self.encoder = Encoder(
-            [
+            attn_layers=[
                 EncoderLayer(
                     AttentionLayer(
                         Attn(
@@ -476,8 +547,9 @@ class ReguformerEncoder(nn.Module):
                 )
                 for l in range(e_layers)
             ],
-            [ConvLayer(d_model) for l in range(e_layers - 1)] if distil else None,
+            conv_layers=[ConvLayer(d_model) for l in range(e_layers - 1)] if distil else None,
             norm_layer=torch.nn.LayerNorm(d_model),
+            p=p,
         )
 
     def forward(self, x_enc, enc_self_mask=None):
