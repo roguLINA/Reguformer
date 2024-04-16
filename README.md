@@ -30,3 +30,15 @@ In all the notebooks the values for train and test sample generaltion, the numbe
 License
 -----
 The project is distributed under [MIT License](https://github.com/roguLINA/Reguformer/blob/main/License.txt).
+
+Citiation
+-----
+Please cite as 
+```
+@article{ermilova2022robust,
+  title={Robust representations of oil wells' intervals via sparse attention mechanism},
+  author={Ermilova, Alina and Baramiia, Nikita and Kornilov, Valerii and Petrakov, Sergey and Zaytsev, Alexey},
+  journal={arXiv preprint arXiv:2212.14246},
+  year={2022}
+}
+```
