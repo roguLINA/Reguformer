@@ -1,7 +1,9 @@
 Robust Representation of Oil Wells' Intervals via Sparse Attention Mechanism
 =====
 
-Code for experiments from the article of the same name. Include framework `trans_oil_gas` for dataset of well-intervals generation and training and testing Transformer-based (with our proposed model Reguformer, the original Transformer, and Performer) Siamese and Triplet models. 
+Code for experiments from the article of the same name. Include framework `trans_oil_gas` for dataset of well-intervals generation and training and testing Transformer-based (with our proposed model Reguformer, the original Transformer, Performer, DropDim, and LRformer) Siamese and Triplet models. 
+
+The focus of the paper is on the well logs; however, the superior quality of Reguformers was proved on testing them on three additional datasets: [Boston crime reports](https://www.kaggle.com/datasets/AnalyzeBoston/crimes-in-boston), [weather logs stations] (https://confluence.ecmwf.int/display/CKB/ERA5%3A+data+documentation), and [the stocks market](https://www.kaggle.com/datasets/szrlee/stock-time-series-20050101-to-20171231). 
 
 Installation of `trans_oil_gas`:
 -----
